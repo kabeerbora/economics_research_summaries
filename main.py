@@ -19,8 +19,8 @@ class ResearchMonitor:
         self.email_password = email_password
         try:
             genai.configure(api_key=google_api_key)
-            # Use 1.5-flash (stable)
-            self.model = genai.GenerativeModel('gemini-1.5-flash')
+            # Use the specific '002' version which is the current stable release
+            self.model = genai.GenerativeModel('gemini-1.5-flash-002')
         except Exception as e:
             print(f"⚠️ Warning: Gemini API issue: {e}")
         
@@ -48,12 +48,14 @@ class ResearchMonitor:
                         pub_date = datetime.strptime(published[:10], '%Y-%m-%d')
                         
                         if pub_date >= start_date:
-                            # SAFE PARSING: Handle missing categories gracefully
+                            # --- SAFE PARSING FIX ---
+                            # This block prevents the "NoneType" crash if a category is missing
                             cat_elem = entry.find('atom:primary_category', namespace)
                             if cat_elem is not None and 'term' in cat_elem.attrib:
                                 cat = cat_elem.attrib['term']
                             else:
-                                cat = "Econ (Uncategorized)"
+                                cat = "Econ"
+                            # ------------------------
                             
                             papers.append({
                                 'title': entry.find('atom:title', namespace).text.strip().replace('\n', ' '),
@@ -61,8 +63,8 @@ class ResearchMonitor:
                                 'link': entry.find('atom:id', namespace).text,
                                 'source': f'arXiv ({cat})'
                             })
-                    except Exception as loop_error:
-                        # If one paper fails, skip it and continue!
+                    except Exception as inner_e:
+                        # If a single paper is broken, skip it and keep going
                         continue
                         
             return papers
@@ -207,6 +209,7 @@ if __name__ == "__main__":
 
     print(f"📝 Found {len(all_papers)} papers.")
     
+    # Send email even if list is empty, just to confirm it ran
     if all_papers:
         print("🤖 Generating AI Summary...")
         digest = monitor.generate_summary(all_papers, FOCUS)
@@ -217,6 +220,6 @@ if __name__ == "__main__":
             print("❌ Email failed.")
     else:
         print("⚠️ No papers found. Sending notification email...")
-        msg = "No new papers matched your criteria this week. This is normal during holidays. The script is working correctly."
+        msg = "No new papers matched your criteria this week. This is normal during holidays. The script is running correctly."
         monitor.send_email(f"Weekly Econ: No New Papers ({datetime.now().strftime('%b %d')})", msg)
         print("✅ Notification sent.")
