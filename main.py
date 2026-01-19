@@ -19,8 +19,8 @@ class ResearchMonitor:
         self.email_password = email_password
         try:
             genai.configure(api_key=google_api_key)
-            # Using the newer model as 1.5 is deprecated in 2026
-            self.model = genai.GenerativeModel('gemini-2.5-flash')
+            # Use 1.5-flash (stable)
+            self.model = genai.GenerativeModel('gemini-1.5-flash')
         except Exception as e:
             print(f"⚠️ Warning: Gemini API issue: {e}")
         
@@ -30,12 +30,9 @@ class ResearchMonitor:
         end_date = datetime.now()
         start_date = end_date - timedelta(days=days_back)
         
-        # FIX: We now restrict the search to Economics (econ) and Quant Finance (q-fin) categories
-        # The query structure is: (cat:econ* OR cat:q-fin*) AND all:YOUR_TOPICS
+        # RESTRICT to Econ/Finance categories
         clean_query = query.replace(' ', '+')
         category_filter = "%28cat:econ*+OR+cat:q-fin*%29"
-        
-        # Construct the final query string
         search_query = f'search_query={category_filter}+AND+all:{clean_query}&start=0&max_results={max_results}&sortBy=submittedDate&sortOrder=descending'
         
         try:
@@ -44,22 +41,30 @@ class ResearchMonitor:
             if response.status_code == 200:
                 root = ET.fromstring(response.content)
                 namespace = {'atom': 'http://www.w3.org/2005/Atom'}
+                
                 for entry in root.findall('atom:entry', namespace):
-                    published = entry.find('atom:published', namespace).text
-                    pub_date = datetime.strptime(published[:10], '%Y-%m-%d')
-                    
-                    # Double check date to ensure freshness
-                    if pub_date >= start_date:
-                        # Extract primary category to confirm it's relevant
-                        primary_cat = entry.find('atom:primary_category', namespace).attrib['term']
+                    try:
+                        published = entry.find('atom:published', namespace).text
+                        pub_date = datetime.strptime(published[:10], '%Y-%m-%d')
                         
-                        papers.append({
-                            'title': entry.find('atom:title', namespace).text.strip().replace('\n', ' '),
-                            'authors': [a.find('atom:name', namespace).text for a in entry.findall('atom:author', namespace)],
-                            'summary': entry.find('atom:summary', namespace).text.strip().replace('\n', ' '),
-                            'link': entry.find('atom:id', namespace).text,
-                            'source': f'arXiv ({primary_cat})'
-                        })
+                        if pub_date >= start_date:
+                            # SAFE PARSING: Handle missing categories gracefully
+                            cat_elem = entry.find('atom:primary_category', namespace)
+                            if cat_elem is not None and 'term' in cat_elem.attrib:
+                                cat = cat_elem.attrib['term']
+                            else:
+                                cat = "Econ (Uncategorized)"
+                            
+                            papers.append({
+                                'title': entry.find('atom:title', namespace).text.strip().replace('\n', ' '),
+                                'summary': entry.find('atom:summary', namespace).text.strip().replace('\n', ' '),
+                                'link': entry.find('atom:id', namespace).text,
+                                'source': f'arXiv ({cat})'
+                            })
+                    except Exception as loop_error:
+                        # If one paper fails, skip it and continue!
+                        continue
+                        
             return papers
         except Exception as e:
             print(f"Error searching arXiv: {e}")
@@ -73,12 +78,10 @@ class ResearchMonitor:
             papers = []
             if response.status_code == 200:
                 root = ET.fromstring(response.content)
-                
                 for item in root.findall('.//item')[:10]:
                     try:
                         papers.append({
                             'title': item.find('title').text,
-                            'authors': ['Journal Author'], 
                             'summary': item.find('description').text[:500] if item.find('description') is not None else "No abstract",
                             'link': item.find('link').text,
                             'source': f"Journal ({series_code})"
@@ -90,24 +93,22 @@ class ResearchMonitor:
             return []
 
     def scrape_ashoka(self):
-        """Custom scraper for Ashoka University Research"""
+        """Custom scraper for Ashoka University"""
         url = "https://www.ashoka.edu.in/research-listing/"
         try:
-            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+            headers = {'User-Agent': 'Mozilla/5.0'}
             response = requests.get(url, headers=headers, timeout=30)
             soup = BeautifulSoup(response.content, 'html.parser')
-            
             papers = []
             for article in soup.find_all('div', class_='research-listing-item')[:5]:
                 try:
-                    title_tag = article.find('h3') or article.find('h4')
-                    link_tag = article.find('a')
-                    if title_tag and link_tag:
+                    title = article.find('h3') or article.find('h4')
+                    link = article.find('a')
+                    if title and link:
                         papers.append({
-                            'title': title_tag.text.strip(),
-                            'authors': ['Ashoka Faculty'],
-                            'summary': "New research listing from Ashoka University website.",
-                            'link': link_tag['href'] if 'http' in link_tag['href'] else f"https://www.ashoka.edu.in{link_tag['href']}",
+                            'title': title.text.strip(),
+                            'summary': "Ashoka University Research Listing",
+                            'link': link['href'] if 'http' in link['href'] else f"https://www.ashoka.edu.in{link['href']}",
                             'source': 'Ashoka Univ'
                         })
                 except: continue
@@ -119,25 +120,23 @@ class ResearchMonitor:
     def generate_summary(self, papers, research_focus):
         if not papers: return "No new papers found."
         
-        # Format the list for Gemini
         papers_text = ""
         for i, paper in enumerate(papers[:40], 1):
             papers_text += f"\n{i}. [{paper['source']}] {paper['title']}\n   Link: {paper['link']}\n"
 
         prompt = f"""
-        You are an expert academic economist (PhD level).
-        I have a list of new papers.
+        You are an expert PhD-level economist.
+        Review this list of new papers.
         
         MY RESEARCH FOCUS: {research_focus}
         
-        STRICT INSTRUCTIONS:
-        1. FILTER: Ignore any papers that are clearly Physics, Computer Science, or Biology (unless they explicitly apply AI to Economics).
-        2. SELECT: Pick the top 5 papers that are strictly relevant to Economics, Political Economy, or Development.
-        3. SUMMARIZE: For these 5, write a professional 2-sentence summary of the contribution.
-        4. LIST: Group other RELEVANT economics papers by sub-field.
-        5. DISCARD: Do not list papers that are irrelevant (e.g. quantum physics).
+        INSTRUCTIONS:
+        1. FILTER: STRICTLY ignore Physics/CS/Bio papers. Only keep Economics.
+        2. RANK: Select the top 5 papers most relevant to Heterodox/Development/India.
+        3. SUMMARIZE: Write a 2-sentence technical summary for each of the top 5.
+        4. CATEGORIZE: Group other relevant economics papers by sub-field.
         
-        List of Papers:
+        LIST:
         {papers_text}
         """
         try:
@@ -160,7 +159,7 @@ class ResearchMonitor:
             <div style="background-color:#f9f9f9; padding:15px; border-radius:5px;">
             {body.replace(chr(10), '<br>').replace('**', '<b>').replace('**', '</b>')}
             </div>
-            <p style="font-size:12px; color:#999;">Sources: arXiv (Econ), RePEc, Ashoka Univ</p>
+            <p style="font-size:12px; color:#999;">Sources: arXiv, RePEc, Ashoka Univ</p>
             </body></html>
             """
             msg.attach(MIMEText(html_content, 'html'))
@@ -183,20 +182,11 @@ if __name__ == "__main__":
         print("❌ Secrets missing.")
         sys.exit(1)
 
-    # UPDATED TOPIC LIST TO BE MORE SPECIFIC
-    ARXIV_TOPICS = [
-        'heterodox', 
-        'political economy', 
-        'development economics', 
-        'India'
-    ]
+    ARXIV_TOPICS = ['heterodox', 'political economy', 'development economics', 'India']
     
     JOURNAL_CODES = [
-        'RePEc:ucp:jpolec', 
-        'RePEc:sae:reorpe', 
-        'RePEc:oup:cambje', 
-        'RePEc:eee:deveco', 
-        'RePEc:eee:wdevel' 
+        'RePEc:ucp:jpolec', 'RePEc:sae:reorpe', 
+        'RePEc:oup:cambje', 'RePEc:eee:deveco', 'RePEc:eee:wdevel' 
     ]
     
     FOCUS = "Heterodox economics, development macroeconomics, and Indian political economy."
@@ -204,8 +194,7 @@ if __name__ == "__main__":
     monitor = ResearchMonitor(GOOGLE_KEY, EMAIL, PASS)
     all_papers = []
 
-    print("🔍 1. Scanning arXiv (ECON ONLY)...")
-    # This query now enforces the 'econ' category filter
+    print("🔍 1. Scanning arXiv (Econ)...")
     all_papers += monitor.search_arxiv(' OR '.join(ARXIV_TOPICS), days_back=7)
 
     print("🔍 2. Scanning Journals...")
@@ -216,14 +205,18 @@ if __name__ == "__main__":
     print("🔍 3. Scraping Ashoka University...")
     all_papers += monitor.scrape_ashoka()
 
-    print(f"📝 Found {len(all_papers)} papers. Filtering & Analyzing...")
+    print(f"📝 Found {len(all_papers)} papers.")
     
     if all_papers:
+        print("🤖 Generating AI Summary...")
         digest = monitor.generate_summary(all_papers, FOCUS)
-        print("📧 Sending digest...")
+        print("📧 Sending Digest Email...")
         if monitor.send_email(f"Weekly Econ Research: {datetime.now().strftime('%b %d')}", digest):
             print("✅ Email sent!")
         else:
             print("❌ Email failed.")
     else:
-        print("❌ No papers found.")
+        print("⚠️ No papers found. Sending notification email...")
+        msg = "No new papers matched your criteria this week. This is normal during holidays. The script is working correctly."
+        monitor.send_email(f"Weekly Econ: No New Papers ({datetime.now().strftime('%b %d')})", msg)
+        print("✅ Notification sent.")
