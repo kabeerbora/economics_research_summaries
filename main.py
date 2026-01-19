@@ -6,7 +6,8 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import sys
-import google.generativeai as genai
+# NEW LIBRARY IMPORT
+from google import genai
 from bs4 import BeautifulSoup
 import warnings
 
@@ -18,9 +19,10 @@ class ResearchMonitor:
         self.email_address = email_address
         self.email_password = email_password
         try:
-            genai.configure(api_key=google_api_key)
-            # Use the specific '002' version which is the current stable release
-            self.model = genai.GenerativeModel('gemini-1.5-flash-002')
+            # NEW CLIENT INITIALIZATION
+            self.client = genai.Client(api_key=google_api_key)
+            # We use 1.5-flash because it is the most reliable current model
+            self.model_name = "gemini-1.5-flash"
         except Exception as e:
             print(f"⚠️ Warning: Gemini API issue: {e}")
         
@@ -30,7 +32,6 @@ class ResearchMonitor:
         end_date = datetime.now()
         start_date = end_date - timedelta(days=days_back)
         
-        # RESTRICT to Econ/Finance categories
         clean_query = query.replace(' ', '+')
         category_filter = "%28cat:econ*+OR+cat:q-fin*%29"
         search_query = f'search_query={category_filter}+AND+all:{clean_query}&start=0&max_results={max_results}&sortBy=submittedDate&sortOrder=descending'
@@ -48,14 +49,12 @@ class ResearchMonitor:
                         pub_date = datetime.strptime(published[:10], '%Y-%m-%d')
                         
                         if pub_date >= start_date:
-                            # --- SAFE PARSING FIX ---
-                            # This block prevents the "NoneType" crash if a category is missing
+                            # SAFE PARSING: Prevent crashes if category is missing
                             cat_elem = entry.find('atom:primary_category', namespace)
                             if cat_elem is not None and 'term' in cat_elem.attrib:
                                 cat = cat_elem.attrib['term']
                             else:
                                 cat = "Econ"
-                            # ------------------------
                             
                             papers.append({
                                 'title': entry.find('atom:title', namespace).text.strip().replace('\n', ' '),
@@ -63,9 +62,7 @@ class ResearchMonitor:
                                 'link': entry.find('atom:id', namespace).text,
                                 'source': f'arXiv ({cat})'
                             })
-                    except Exception as inner_e:
-                        # If a single paper is broken, skip it and keep going
-                        continue
+                    except: continue # Skip bad entries
                         
             return papers
         except Exception as e:
@@ -142,7 +139,11 @@ class ResearchMonitor:
         {papers_text}
         """
         try:
-            response = self.model.generate_content(prompt)
+            # NEW GENERATE CONTENT SYNTAX
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=prompt
+            )
             return response.text
         except Exception as e:
             return f"Error with Gemini: {e}"
@@ -209,7 +210,6 @@ if __name__ == "__main__":
 
     print(f"📝 Found {len(all_papers)} papers.")
     
-    # Send email even if list is empty, just to confirm it ran
     if all_papers:
         print("🤖 Generating AI Summary...")
         digest = monitor.generate_summary(all_papers, FOCUS)
@@ -219,6 +219,7 @@ if __name__ == "__main__":
         else:
             print("❌ Email failed.")
     else:
+        # --- NO PAPERS FOUND LOGIC ---
         print("⚠️ No papers found. Sending notification email...")
         msg = "No new papers matched your criteria this week. This is normal during holidays. The script is running correctly."
         monitor.send_email(f"Weekly Econ: No New Papers ({datetime.now().strftime('%b %d')})", msg)
