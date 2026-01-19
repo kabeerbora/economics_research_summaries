@@ -19,7 +19,7 @@ class ResearchMonitor:
         self.email_password = email_password
         try:
             genai.configure(api_key=google_api_key)
-            self.model = genai.GenerativeModel('gemini-1.5-flash')
+            self.model = genai.GenerativeModel('gemini-2.5-flash')
         except Exception as e:
             print(f"⚠️ Warning: Gemini API issue: {e}")
         
