@@ -22,7 +22,7 @@ class ResearchMonitor:
             # NEW CLIENT INITIALIZATION
             self.client = genai.Client(api_key=google_api_key)
             # We use 1.5-flash because it is the most reliable current model
-            self.model_name = "gemini-2.0-flash-exp"
+            self.model_name = "gemini-1.5-flash"
         except Exception as e:
             print(f"⚠️ Warning: Gemini API issue: {e}")
         
@@ -69,52 +69,78 @@ class ResearchMonitor:
             print(f"Error searching arXiv: {e}")
             return []
 
-    def search_repec_series(self, series_code, days_back=7):
-        """Search specific journals via RePEc"""
-        base_url = f"https://ideas.repec.org/cgi-bin/get_rss.pl?h={series_code}"
+    def search_ssrn(self, query, days_back=7, max_results=50):
+        """Search SSRN for Economics papers"""
+        # SSRN doesn't have a public API, but we can search via their RSS feeds
+        # SSRN Economics Network: https://papers.ssrn.com/sol3/JELJOUR_Results.cfm
+        base_url = "https://papers.ssrn.com/sol3/JELJOUR_Results.cfm"
         try:
-            response = requests.get(base_url, timeout=30)
-            papers = []
-            if response.status_code == 200:
-                root = ET.fromstring(response.content)
-                for item in root.findall('.//item')[:10]:
-                    try:
-                        papers.append({
-                            'title': item.find('title').text,
-                            'summary': item.find('description').text[:500] if item.find('description') is not None else "No abstract",
-                            'link': item.find('link').text,
-                            'source': f"Journal ({series_code})"
-                        })
-                    except: continue
-            return papers
-        except Exception as e:
-            print(f"Error searching RePEc ({series_code}): {e}")
-            return []
-
-    def scrape_ashoka(self):
-        """Custom scraper for Ashoka University"""
-        url = "https://www.ashoka.edu.in/research-listing/"
-        try:
+            # Search for economics papers using SSRN's format
+            params = {
+                'form_name': 'journalBrowse',
+                'journal_id': '1',  # Economics Network
+                'npage': '1'
+            }
             headers = {'User-Agent': 'Mozilla/5.0'}
-            response = requests.get(url, headers=headers, timeout=30)
-            soup = BeautifulSoup(response.content, 'html.parser')
+            response = requests.get(base_url, params=params, headers=headers, timeout=30)
             papers = []
-            for article in soup.find_all('div', class_='research-listing-item')[:5]:
-                try:
-                    title = article.find('h3') or article.find('h4')
-                    link = article.find('a')
-                    if title and link:
-                        papers.append({
-                            'title': title.text.strip(),
-                            'summary': "Ashoka University Research Listing",
-                            'link': link['href'] if 'http' in link['href'] else f"https://www.ashoka.edu.in{link['href']}",
-                            'source': 'Ashoka Univ'
-                        })
-                except: continue
+            
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.content, 'html.parser')
+                # Parse SSRN papers from the page
+                for paper_div in soup.find_all('div', class_='paper')[:max_results]:
+                    try:
+                        title_elem = paper_div.find('a', class_='title')
+                        abstract_elem = paper_div.find('div', class_='abstract')
+                        
+                        if title_elem:
+                            papers.append({
+                                'title': title_elem.text.strip(),
+                                'summary': abstract_elem.text.strip()[:500] if abstract_elem else "No abstract available",
+                                'link': 'https://papers.ssrn.com' + title_elem['href'] if title_elem.get('href', '').startswith('/') else title_elem.get('href', ''),
+                                'source': 'SSRN'
+                            })
+                    except:
+                        continue
+                        
             return papers
         except Exception as e:
-            print(f"Error scraping Ashoka: {e}")
+            print(f"Error searching SSRN: {e}")
             return []
+    
+    def search_repec_working_papers(self, days_back=7):
+        """Search RePEc for working papers (not journals)"""
+        # RePEc working paper series codes
+        working_paper_series = [
+            'RePEc:nbr:nberwo',  # NBER Working Papers
+            'RePEc:cpr:ceprdp',  # CEPR Discussion Papers
+            'RePEc:iza:izadps',  # IZA Discussion Papers
+            'RePEc:wrk:warwec',  # Warwick Economic Research Papers
+            'RePEc:oxf:wpaper',  # Oxford Economic Papers
+        ]
+        
+        papers = []
+        for series_code in working_paper_series:
+            base_url = f"https://ideas.repec.org/cgi-bin/get_rss.pl?h={series_code}"
+            try:
+                response = requests.get(base_url, timeout=30)
+                if response.status_code == 200:
+                    root = ET.fromstring(response.content)
+                    for item in root.findall('.//item')[:10]:
+                        try:
+                            papers.append({
+                                'title': item.find('title').text,
+                                'summary': item.find('description').text[:500] if item.find('description') is not None else "No abstract",
+                                'link': item.find('link').text,
+                                'source': f"Working Paper ({series_code.split(':')[-1]})"
+                            })
+                        except:
+                            continue
+            except Exception as e:
+                print(f"Error searching RePEc working papers ({series_code}): {e}")
+                continue
+                
+        return papers
 
     def generate_summary(self, papers, research_focus):
         if not papers: return "No new papers found."
@@ -162,7 +188,7 @@ class ResearchMonitor:
             <div style="background-color:#f9f9f9; padding:15px; border-radius:5px;">
             {body.replace(chr(10), '<br>').replace('**', '<b>').replace('**', '</b>')}
             </div>
-            <p style="font-size:12px; color:#999;">Sources: arXiv, RePEc, Ashoka Univ</p>
+            <p style="font-size:12px; color:#999;">Sources: arXiv, SSRN, RePEc Working Papers</p>
             </body></html>
             """
             msg.attach(MIMEText(html_content, 'html'))
@@ -187,11 +213,6 @@ if __name__ == "__main__":
 
     ARXIV_TOPICS = ['heterodox', 'political economy', 'development economics', 'India']
     
-    JOURNAL_CODES = [
-        'RePEc:ucp:jpolec', 'RePEc:sae:reorpe', 
-        'RePEc:oup:cambje', 'RePEc:eee:deveco', 'RePEc:eee:wdevel' 
-    ]
-    
     FOCUS = "Heterodox economics, development macroeconomics, and Indian political economy."
 
     monitor = ResearchMonitor(GOOGLE_KEY, EMAIL, PASS)
@@ -200,13 +221,11 @@ if __name__ == "__main__":
     print("🔍 1. Scanning arXiv (Econ)...")
     all_papers += monitor.search_arxiv(' OR '.join(ARXIV_TOPICS), days_back=7)
 
-    print("🔍 2. Scanning Journals...")
-    for code in JOURNAL_CODES:
-        print(f"   - Checking {code}...")
-        all_papers += monitor.search_repec_series(code, days_back=7)
+    print("🔍 2. Scanning SSRN...")
+    all_papers += monitor.search_ssrn('economics', days_back=7)
 
-    print("🔍 3. Scraping Ashoka University...")
-    all_papers += monitor.scrape_ashoka()
+    print("🔍 3. Scanning RePEc Working Papers...")
+    all_papers += monitor.search_repec_working_papers(days_back=7)
 
     print(f"📝 Found {len(all_papers)} papers.")
     
