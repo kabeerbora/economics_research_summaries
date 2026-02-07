@@ -94,13 +94,15 @@ class ResearchMonitor:
                         abstract_elem = paper_div.find('div', class_='abstract')
                         
                         if title_elem:
+                            href = title_elem.get('href', '')
+                            link = 'https://papers.ssrn.com' + href if href.startswith('/') else href
                             papers.append({
                                 'title': title_elem.text.strip(),
                                 'summary': abstract_elem.text.strip()[:500] if abstract_elem else "No abstract available",
-                                'link': 'https://papers.ssrn.com' + title_elem['href'] if title_elem.get('href', '').startswith('/') else title_elem.get('href', ''),
+                                'link': link,
                                 'source': 'SSRN'
                             })
-                    except:
+                    except Exception:
                         continue
                         
             return papers
@@ -116,7 +118,7 @@ class ResearchMonitor:
             'RePEc:cpr:ceprdp',  # CEPR Discussion Papers
             'RePEc:iza:izadps',  # IZA Discussion Papers
             'RePEc:wrk:warwec',  # Warwick Economic Research Papers
-            'RePEc:oxf:wpaper',  # Oxford Economic Papers
+            'RePEc:oxf:wpaper',  # Oxford Working Papers
         ]
         
         papers = []
@@ -134,7 +136,7 @@ class ResearchMonitor:
                                 'link': item.find('link').text,
                                 'source': f"Working Paper ({series_code.split(':')[-1]})"
                             })
-                        except:
+                        except Exception:
                             continue
             except Exception as e:
                 print(f"Error searching RePEc working papers ({series_code}): {e}")
